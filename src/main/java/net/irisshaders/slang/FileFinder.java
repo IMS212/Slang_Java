@@ -1,32 +1,33 @@
 package net.irisshaders.slang;
 
-import net.irisshaders.slang.internal.ListFilesFunction;
-import net.irisshaders.slang.internal.LoadFileFunction;
-import net.irisshaders.slang.internal.SlangJava;
-import net.irisshaders.slang.internal.SlangString;
+import net.irisshaders.slang.internal.*;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import java.util.function.BiConsumer;
-import java.util.function.Function;
 
-public class FileFinder {
-    protected final MemorySegment segment;
-    protected final MemorySegment segment2;
-    private final Function<String, byte[]> loader;
-    private final BiConsumer<String, FileFinderFunction> lister;
+public abstract class FileFinder {
+    protected final MemorySegment retriever;
+    protected final MemorySegment lister;
+    protected final MemorySegment combiner;
+    protected final MemorySegment checker;
     private final Arena arena;
     private final FileLister listerImpl;
 
-    public FileFinder(Function<String, byte[]> loader, BiConsumer<String, FileFinderFunction> lister) {
+    public abstract void forAllInFolder(String path, FileFinderFunction callback);
+
+    public abstract byte[] getFile(String path);
+
+    public abstract boolean isFolder(String path);
+
+    public abstract String combinePath(String base, String relative);
+
+    public FileFinder() {
         this.listerImpl = new FileLister();
-        this.loader = loader;
-        this.lister = lister;
         this.arena = Arena.ofShared();
 
-        this.segment = LoadFileFunction.allocate((f) -> {
-            byte[] data = this.loader.apply(f.getString(0));
+        this.retriever = LoadFileFunction.allocate((f) -> {
+            byte[] data = getFile(f.getString(0));
             if (data == null) return null;
             MemorySegment slangString = SlangString.allocate(arena);
             slangString.set(ValueLayout.ADDRESS, 0, arena.allocateFrom(ValueLayout.OfByte.JAVA_BYTE, data));
@@ -34,11 +35,19 @@ public class FileFinder {
             return slangString;
         }, arena);
 
-        this.segment2 = ListFilesFunction.allocate((path, callback, userData) -> {
+        this.lister = ListFilesFunction.allocate((path, callback, userData) -> {
             listerImpl.setCallback(callback, userData);
-            lister.accept(path.getString(0), listerImpl::onFileFound);
+            forAllInFolder(path.getString(0), listerImpl::onFileFound);
             return 0;
         }, arena);
+
+        this.checker = CheckIsDirectoryFunction.allocate((path) -> isFolder(path.getString(0)) ? 1 : 0, arena);
+
+        this.combiner = CombinePathsFunction.allocate(((path1, path2, outPathSize) -> {
+            MemorySegment segment = arena.allocateFrom(combinePath(path1.getString(0), path2.getString(0)));
+            outPathSize.set(ValueLayout.JAVA_INT, 0L, (int) segment.byteSize());
+            return segment;
+        }), arena);
     }
 
     private static class FileLister {

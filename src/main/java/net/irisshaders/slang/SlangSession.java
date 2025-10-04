@@ -11,13 +11,14 @@ import java.util.Objects;
 
 public class SlangSession {
     protected final MemorySegment segment;
+    protected final Arena arena;
 
     public SlangSession(Slang global, FileFinder fileSystem) {
-        segment = SlangJava.ap_createSession(global.segment, fileSystem.segment, fileSystem.segment2);
+        segment = SlangJava.ap_createSession(global.segment, fileSystem.retriever, fileSystem.lister, fileSystem.combiner, fileSystem.checker);
+        this.arena = Arena.ofShared();
     }
 
     public SlangModule loadModule(String moduleName) {
-        Arena arena = Arena.ofAuto();
         try {
             MemorySegment error = arena.allocateFrom(ValueLayout.ADDRESS, MemorySegment.NULL);
             MemorySegment module = arena.allocateFrom(moduleName);
@@ -28,14 +29,13 @@ public class SlangSession {
                 LibCStdlib.nfree(error.get(ValueLayout.ADDRESS, 0).address());
                 throw new IllegalStateException("Failed to load module '" + moduleName + "': " + err);
             }
-            return new SlangModule(moduleName, result);
+            return new SlangModule(moduleName, result, arena);
         } catch (IllegalStateException e) {
             throw new RuntimeException(e);
         }
     }
 
     public SlangModule loadModuleFromSource(String moduleName, String pathName, String codeS) {
-        Arena arena = Arena.ofAuto();
         try {
             MemorySegment error = arena.allocateFrom(ValueLayout.ADDRESS, MemorySegment.NULL);
             MemorySegment module = arena.allocateFrom(moduleName);
@@ -48,14 +48,13 @@ public class SlangSession {
                 LibCStdlib.nfree(error.get(ValueLayout.ADDRESS, 0).address());
                 throw new IllegalStateException("Failed to load module '" + moduleName + "': " + err);
             }
-            return new SlangModule(moduleName, result);
+            return new SlangModule(moduleName, result, arena);
         } catch (IllegalStateException e) {
             throw new RuntimeException(e);
         }
     }
 
     public SlangCompile compileModules(SlangEntryPoint entry, SlangModule... modules) {
-        Arena arena = Arena.ofAuto();
         MemorySegment error = arena.allocateFrom(ValueLayout.ADDRESS, MemorySegment.NULL);
 
         MemorySegment values = arena.allocate(ValueLayout.ADDRESS, modules.length);
@@ -68,7 +67,7 @@ public class SlangSession {
             String err = error.get(ValueLayout.ADDRESS, 0).reinterpret(Long.MAX_VALUE).getString(0);
             System.out.println(err);
         }
-        return new SlangCompile(seg);
+        return new SlangCompile(seg, arena);
     }
 
     public ModuleIR[] getModules() {
@@ -102,5 +101,6 @@ public class SlangSession {
 
     public void destroy() {
         SlangJava.ap_destroySession(segment);
+        arena.close();
     }
 }

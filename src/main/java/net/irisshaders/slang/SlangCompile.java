@@ -9,13 +9,14 @@ import java.lang.foreign.ValueLayout;
 
 public class SlangCompile {
     private final MemorySegment segment;
+    private final Arena arena;
 
-    public SlangCompile(MemorySegment seg) {
+    public SlangCompile(MemorySegment seg, Arena arena) {
         this.segment = seg;
+        this.arena = arena;
     }
 
     public String getCode(SlangSession session) {
-        Arena arena = Arena.ofAuto();
         try {
             MemorySegment error = arena.allocateFrom(ValueLayout.ADDRESS, MemorySegment.NULL);
             MemorySegment result = SlangJava.ap_linkProgram(session.segment, segment, error);

@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
     struct SlangString {
-        char *data;
+        void *data;
         int size;
     };
 
@@ -17,6 +17,11 @@ extern "C" {
         int type;
     } ShaderVariable;
 
+    typedef struct EntryPoints {
+        const char *name;
+        int index;
+    } EntryPoints;
+
     typedef struct ShaderModule {
         const char *name;
         const char *path;
@@ -26,20 +31,22 @@ extern "C" {
 
     typedef struct SlangGlobalSessionWrapper SlangGlobalSessionWrapper;
     typedef struct SlangSessionWrapper SlangSessionWrapper;
+    typedef struct SlangLinkedWrapper SlangLinkedWrapper;
     typedef struct SlangModuleWrapper SlangModuleWrapper;
     typedef struct SlangEntryPointWrapper SlangEntryPointWrapper;
     typedef struct SlangProgramWrapper SlangProgramWrapper;
 
     typedef struct SlangString *(*LoadFileFunction)(char const *path);
-
     typedef int (*ListFilesFunction)(const char *path, void *callback, void *userData);
+    typedef char* (*CombinePathsFunction)(const char *path1, const char *path2, int* outPathSize);
+    typedef int (*CheckIsDirectoryFunction)(const char *path);
 
     SlangGlobalSessionWrapper *ap_createGlobalSession(void);
 
     void ap_destroyGlobalSession(SlangGlobalSessionWrapper *session);
 
     SlangSessionWrapper *ap_createSession(SlangGlobalSessionWrapper *globalSession,
-                                          LoadFileFunction file, ListFilesFunction lister);
+                                          LoadFileFunction file, ListFilesFunction lister, CombinePathsFunction combiner, CheckIsDirectoryFunction checker);
 
     void ap_destroySession(SlangSessionWrapper *session);
 
@@ -54,11 +61,15 @@ extern "C" {
     SlangEntryPointWrapper *ap_findEntryPoint(SlangModuleWrapper *module,
                                               char *path);
 
+    int ap_getEntryPointCount(SlangModuleWrapper *module);
+
+    void ap_getEntryPoints(SlangModuleWrapper* module, EntryPoints* entries);
+
     SlangProgramWrapper *ap_compileProgram(SlangSessionWrapper *session,
                                            SlangEntryPointWrapper *entryPoint,
                                            void **modules, int size, const void **onError);
 
-    void const *ap_linkProgram(SlangSessionWrapper *session,
+    SlangLinkedWrapper* ap_linkProgram(SlangSessionWrapper *session,
                                SlangProgramWrapper *program,
                                const void **onError);
 

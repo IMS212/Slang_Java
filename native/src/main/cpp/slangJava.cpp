@@ -11,6 +11,7 @@
 #include "slang.h"
 
 #include <cstring>
+#include <format>
 
 void diagnoseIfNeeded(slang::IBlob *diagnosticsBlob) {
     if (diagnosticsBlob != nullptr) {
@@ -36,6 +37,10 @@ struct SlangEntryPointWrapper {
 };
 
 struct SlangProgramWrapper {
+    Slang::ComPtr<slang::IComponentType> program;
+};
+
+struct SlangLinkedWrapper {
     Slang::ComPtr<slang::IComponentType> program;
 };
 
@@ -72,14 +77,19 @@ class ApBlob final : public ISlangBlob {
         }
 };
 
-class ApFileSystem final : public ISlangFileSystem {
+class ApFileSystem final : public ISlangFileSystemExt {
     public:
         LoadFileFunction funct;
         ListFilesFunction lister;
+        CombinePathsFunction combiner;
+        CheckIsDirectoryFunction checker;
 
-        explicit ApFileSystem(LoadFileFunction funct, ListFilesFunction lister) {
+        explicit ApFileSystem(LoadFileFunction funct, ListFilesFunction lister, CombinePathsFunction combiner,
+                             CheckIsDirectoryFunction checker) {
             this->funct = funct;
             this->lister = lister;
+            this->combiner = combiner;
+            this->checker = checker;
         }
 
         virtual ~ApFileSystem() = default;
@@ -91,7 +101,7 @@ class ApFileSystem final : public ISlangFileSystem {
                 return SLANG_E_NOT_FOUND;
             }
 
-            ISlangBlob *rawBlob = new ApBlob(blob->data, blob->size);
+            ISlangBlob *rawBlob = slang_createBlob(blob->data, blob->size);
 
             *outBlob = rawBlob;
 
@@ -137,7 +147,40 @@ class ApFileSystem final : public ISlangFileSystem {
             return lister(path, (void *) callback, userData);
         }
 
-        OSPathKind getOSPathKind();
+        OSPathKind getOSPathKind() override {
+            return OSPathKind::Direct;
+        }
+
+        SlangResult getFileUniqueIdentity(const char *path, ISlangBlob **outUniqueIdentity) override {
+            *outUniqueIdentity = slang_createBlob(path, strlen(path));
+            return SLANG_OK; // TODO: this is... wrong. Paths should be resolved to absolute paths first, and then hashed.
+        }
+
+        SlangResult calcCombinedPath(SlangPathType fromPathType, const char *path1, const char *path2,
+            ISlangBlob **pathOut) override {
+            int size = -1;
+
+            char* path = combiner(path1, path2, &size);
+            if (size <= 0 || !path) {
+                printf("Couldn't get combined path\n");
+                return SLANG_E_NOT_FOUND;
+            }
+
+            *pathOut = slang_createBlob(path, size);
+            return SLANG_OK;
+        }
+
+        SlangResult getPathType(const char *path, SlangPathType *pathTypeOut) override {
+            bool isDir = checker(path) > 0;
+            *pathTypeOut = isDir ? SLANG_PATH_TYPE_DIRECTORY : SLANG_PATH_TYPE_FILE;
+            return SLANG_OK;
+        }
+
+        SlangResult getPath(PathKind kind, const char *path, ISlangBlob **outPath) override {
+            printf("FUCK\n");
+            *outPath = slang_createBlob(path, strlen(path));
+            return SLANG_OK;
+        }
 };
 
 char *nullTerminateThis(const char *src, std::size_t len) {
@@ -279,6 +322,7 @@ extern "C" {
 
             module->serialize(&blob);
 
+
             if (!blob) throw std::runtime_error("Failed to serialize module");
 
             const size_t sz = blob->getBufferSize();
@@ -347,13 +391,13 @@ extern "C" {
     }
 
     SlangSessionWrapper *ap_createSession(SlangGlobalSessionWrapper *globalSession, LoadFileFunction file,
-                                          ListFilesFunction lister) {
+                                          ListFilesFunction lister, CombinePathsFunction combiner, CheckIsDirectoryFunction checker) {
         slang::SessionDesc desc = {};
         desc.allowGLSLSyntax = true;
         auto *entry = static_cast<slang::CompilerOptionEntry *>(malloc(sizeof(slang::CompilerOptionEntry) * 4));
         entry[0].name = slang::CompilerOptionName::VulkanInvertY;
         entry[0].value = {
-            .intValue0 = 1
+            .intValue0 = 0
         };
         entry[1].name = slang::CompilerOptionName::MinimumSlangOptimization;
         entry[1].value = {
@@ -371,7 +415,7 @@ extern "C" {
 
         desc.targets = &targetDesc;
         desc.targetCount = 1;
-        desc.fileSystem = new ApFileSystem(file, lister);
+        desc.fileSystem = new ApFileSystem(file, lister, combiner, checker);
         desc.searchPathCount = 1;
         const char *data = "/";
         desc.searchPaths = &data;
@@ -402,12 +446,29 @@ extern "C" {
                                              diagnosticsBlob->getBufferSize());
                 return nullptr;
             }
+
             return wrapper;
         } catch (...) {
             diagnoseIfNeeded(diagnosticsBlob);
 
             printf("FUCK");
             return nullptr;
+        }
+    }
+
+    int ap_getEntryPointCount(SlangModuleWrapper* module) {
+        return module->module->getDefinedEntryPointCount();
+    }
+
+    void ap_getEntryPoints(SlangModuleWrapper* module, EntryPoints* entries) {
+        int count = module->module->getDefinedEntryPointCount();
+        for (int i = 0; i < count; i++) {
+            slang::IEntryPoint* ep = nullptr;
+            module->module->getDefinedEntryPoint(i, &ep);
+            entries[i] = {
+                .name = ep->getFunctionReflection()->getName(),
+                .index = i
+            };
         }
     }
 
@@ -476,19 +537,22 @@ extern "C" {
         session->session->createCompositeComponentType(components.data(), components.size(),
                                                        program->program.writeRef(), &diagnosticsBlob);
 
+        //*onError = strdup(static_cast<SlangModuleWrapper *>(modules[0])->module->getName());
+
         diagnoseIfNeeded(diagnosticsBlob);
 
         return program;
     }
 
-    void const *ap_linkProgram(SlangSessionWrapper *session, SlangProgramWrapper *program,
+    SlangLinkedWrapper* ap_linkProgram(SlangSessionWrapper *session, SlangProgramWrapper *program,
                                const void **onError) {
         slang::IBlob *diagnosticsBlob = nullptr;
 
-        Slang::ComPtr<slang::IComponentType> linkedProgram;
-        program->program->link(linkedProgram.writeRef(), &diagnosticsBlob);
+        SlangLinkedWrapper* prog = new SlangLinkedWrapper{};
+
+        program->program->link(prog->program.writeRef(), &diagnosticsBlob);
         diagnoseIfNeeded(diagnosticsBlob);
-        if (!linkedProgram.get()) {
+        if (!prog->program.get()) {
             const char *ptr = static_cast<const char *>(diagnosticsBlob->getBufferPointer());
             size_t len = diagnosticsBlob->getBufferSize();
 
@@ -498,7 +562,7 @@ extern "C" {
         }
         Slang::ComPtr<slang::IBlob> outCode;
 
-        linkedProgram->getEntryPointCode(0, 0, outCode.writeRef(), &diagnosticsBlob);
+        prog->program->getEntryPointCode(0, 0, outCode.writeRef(), &diagnosticsBlob);
         diagnoseIfNeeded(diagnosticsBlob);
 
         if (!outCode.get()) {
@@ -511,7 +575,8 @@ extern "C" {
         }
 
 
-        return outCode->getBufferPointer();
+
+        return prog;
     }
 
     void ap_freeSegment(ShaderVariable *data, int variableCount) {
