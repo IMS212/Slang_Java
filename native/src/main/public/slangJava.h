@@ -56,6 +56,11 @@ extern "C" {
     SlangModuleWrapper *ap_loadModuleFromCode(SlangSessionWrapper *session, char *name, char *path, char *code,
                                               const void **onError);
 
+    SlangModuleWrapper *ap_loadModuleFromIRBlob(SlangSessionWrapper *session, char *name, char *path, void *blob, int size,
+                                              const void **onError);
+
+    int ap_isModuleValid(SlangSessionWrapper *sesson, char* name, void *blob, int size);
+
     void ap_onLoadFile(int isFolder, char *name, void *callback, void *userData);
 
     SlangEntryPointWrapper *ap_findEntryPoint(SlangModuleWrapper *module,
@@ -65,13 +70,13 @@ extern "C" {
 
     void ap_getEntryPoints(SlangModuleWrapper* module, EntryPoints* entries);
 
-    SlangProgramWrapper *ap_compileProgram(SlangSessionWrapper *session,
-                                           SlangEntryPointWrapper *entryPoint,
-                                           void **modules, int size, const void **onError);
+    SlangProgramWrapper *ap_compileProgram(SlangSessionWrapper *session, void **entryPoints,
+                                           void **modules, int moduleCount, int entryPointCount, const void **onError);
 
-    SlangLinkedWrapper* ap_linkProgram(SlangSessionWrapper *session,
-                               SlangProgramWrapper *program,
+    SlangLinkedWrapper* ap_linkProgram(SlangProgramWrapper *program,
                                const void **onError);
+
+    const void* ap_getEntryPointCode(SlangLinkedWrapper* linked, int targetIndex, int* outSize, const void **onError);
 
     int ap_getVariableCount(SlangSessionWrapper *session,
                             SlangProgramWrapper *program,

@@ -10,24 +10,24 @@ import java.lang.foreign.ValueLayout;
 public class SlangCompile {
     private final MemorySegment segment;
     private final Arena arena;
+    private final SlangEntryPoint[] entryPoints;
 
-    public SlangCompile(MemorySegment seg, Arena arena) {
+    public SlangCompile(MemorySegment seg, Arena arena, SlangEntryPoint[] entryPoints) {
         this.segment = seg;
         this.arena = arena;
+        this.entryPoints = entryPoints;
     }
 
-    public String getCode(SlangSession session) {
-        try {
-            MemorySegment error = arena.allocateFrom(ValueLayout.ADDRESS, MemorySegment.NULL);
-            MemorySegment result = SlangJava.ap_linkProgram(session.segment, segment, error);
-            if (result.address() == 0) {
-                String err = error.get(ValueLayout.ADDRESS, 0).reinterpret(Long.MAX_VALUE).getString(0);
-                throw new IllegalStateException("Failed to load module : " + err);
-            }
-            return result.getString(0);
-        } catch (IllegalStateException e) {
-            throw new RuntimeException(e);
+    public SlangLink link(SlangSession session) {
+        MemorySegment onError = arena.allocateFrom(ValueLayout.ADDRESS, MemorySegment.NULL);
+        MemorySegment result = SlangJava.ap_linkProgram(segment, onError);
+
+        if (result.address() == 0) {
+            String err = onError.get(ValueLayout.ADDRESS, 0).reinterpret(Long.MAX_VALUE).getString(0);
+            throw new IllegalStateException("Failed to link program: " + err);
         }
+
+        return new SlangLink(result, arena, entryPoints);
     }
 
     public ReflectedVariable[] getReflection(SlangSession session) {

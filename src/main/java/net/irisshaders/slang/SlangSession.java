@@ -54,20 +54,50 @@ public class SlangSession {
         }
     }
 
-    public SlangCompile compileModules(SlangEntryPoint entry, SlangModule... modules) {
+    public boolean isModuleValid(String moduleName, byte[] blob) {
+        MemorySegment module = arena.allocateFrom(moduleName);
+        MemorySegment code = arena.allocateFrom(ValueLayout.JAVA_BYTE, blob);
+        Objects.requireNonNull(module);
+        return SlangJava.ap_isModuleValid(segment, module, code, blob.length) == 1;
+    }
+
+    public SlangModule loadModuleFromBlob(String moduleName, String pathName, byte[] blob) {
+        try {
+            MemorySegment error = arena.allocateFrom(ValueLayout.ADDRESS, MemorySegment.NULL);
+            MemorySegment module = arena.allocateFrom(moduleName);
+            MemorySegment path = arena.allocateFrom(pathName);
+            MemorySegment code = arena.allocateFrom(ValueLayout.JAVA_BYTE, blob);
+            Objects.requireNonNull(module);
+            MemorySegment result = SlangJava.ap_loadModuleFromIRBlob(segment, module, path, code, blob.length, error);
+            if (result.address() == 0) {
+                String err = error.get(ValueLayout.ADDRESS, 0).reinterpret(Long.MAX_VALUE).getString(0);
+                LibCStdlib.nfree(error.get(ValueLayout.ADDRESS, 0).address());
+                throw new IllegalStateException("Failed to load module '" + moduleName + "' from IR: " + err);
+            }
+            return new SlangModule(moduleName, result, arena);
+        } catch (IllegalStateException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public SlangCompile compileModules(SlangEntryPoint[] entryPoints, SlangModule... modules) {
         MemorySegment error = arena.allocateFrom(ValueLayout.ADDRESS, MemorySegment.NULL);
 
-        MemorySegment values = arena.allocate(ValueLayout.ADDRESS, modules.length);
+        MemorySegment moduleArray = arena.allocate(ValueLayout.ADDRESS, modules.length);
         for (int i = 0; i < modules.length; i++) {
-            values.set(ValueLayout.ADDRESS, i * ValueLayout.ADDRESS.byteSize(), modules[i].segment);
+            moduleArray.set(ValueLayout.ADDRESS, i * ValueLayout.ADDRESS.byteSize(), modules[i].segment);
+        }
+        MemorySegment entryPointArray = arena.allocate(ValueLayout.ADDRESS, entryPoints.length);
+        for (int i = 0; i < entryPoints.length; i++) {
+            entryPointArray.set(ValueLayout.ADDRESS, i * ValueLayout.ADDRESS.byteSize(), entryPoints[i].segment);
         }
 
-        MemorySegment seg = SlangJava.ap_compileProgram(segment, entry.segment, values, modules.length, error);
+        MemorySegment seg = SlangJava.ap_compileProgram(segment, entryPointArray, moduleArray, modules.length, entryPoints.length, error);
         if (seg.address() == 0) {
             String err = error.get(ValueLayout.ADDRESS, 0).reinterpret(Long.MAX_VALUE).getString(0);
             System.out.println(err);
         }
-        return new SlangCompile(seg, arena);
+        return new SlangCompile(seg, arena, entryPoints);
     }
 
     public ModuleIR[] getModules() {

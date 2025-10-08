@@ -25,7 +25,7 @@ tasks.withType<LinkSharedLibrary>().configureEach {
     // add the path to libslang.so
     linkerArgs.addAll(
         listOf(
-            "/home/ims/slang/cmake-build-debug/Debug/lib/libslang.so"
+            "/home/ims/slang/cmake-build-release-system/Release/lib/libslang.so"
         )
     )
 }

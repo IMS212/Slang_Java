@@ -41,7 +41,7 @@ struct SlangProgramWrapper {
 };
 
 struct SlangLinkedWrapper {
-    Slang::ComPtr<slang::IComponentType> program;
+    Slang::ComPtr<slang::IComponentType> linked;
 };
 
 class ApBlob final : public ISlangBlob {
@@ -196,17 +196,13 @@ extern "C" {
     }
 
     static void listResources(slang::ProgramLayout *prog, int targetIndex, const void **onError) {
-        // Use the per-target layout
         auto *tgt = prog;
         auto *globalsVL = tgt->getGlobalParamsVarLayout();
         auto *globalsTL = tgt->getGlobalParamsTypeLayout();
-
         const int rangeCount = globalsTL->getBindingRangeCount();
         for (int r = 0; r < rangeCount; ++r) {
-            const auto brType = globalsTL->getBindingRangeType(r); // slang::BindingType in your build
-            const int brCount = globalsTL->getBindingRangeBindingCount(r); // array size (>=1)
-
-            // Map to a GL-ish kind just for printing
+            const auto brType = globalsTL->getBindingRangeType(r);
+            const int brCount = globalsTL->getBindingRangeBindingCount(r);
             const char *glKind =
                     (brType == slang::BindingType::ConstantBuffer)
                         ? "UBO"
@@ -219,40 +215,25 @@ extern "C" {
                                        brType == slang::BindingType::MutableRawBuffer)
                                           ? "SSBO"
                                           : "Texture/BufferUnit";
-
             slang::ParameterCategory cat;
             if (brType == slang::BindingType::ConstantBuffer) {
                 cat = slang::ParameterCategory::ConstantBuffer;
-            } else if (
-                brType == slang::BindingType::Sampler ||
-                brType == slang::BindingType::CombinedTextureSampler) {
+            } else if (brType == slang::BindingType::Sampler || brType == slang::BindingType::CombinedTextureSampler) {
                 cat = slang::ParameterCategory::SamplerState;
-            } else if (
-                brType == slang::BindingType::Texture ||
-                brType == slang::BindingType::MutableTexture) {
+            } else if (brType == slang::BindingType::Texture || brType == slang::BindingType::MutableTexture) {
                 cat = slang::ParameterCategory::UnorderedAccess;
             } else {
                 cat = slang::ParameterCategory::DescriptorTableSlot;
             }
-
-            // Space (descriptor set / register space) for this binding range
             const uint32_t space = globalsTL->getBindingRangeDescriptorSetIndex(r);
-
-            // Translate binding-range -> descriptor-range -> API binding index
-            const int drFirst = globalsTL->getBindingRangeFirstDescriptorRangeIndex(r);
-            // Usually a single descriptor range; iterate if you want to print both parts
-            // of a combined texture+sampler, etc.
             const uint32_t binding = globalsTL->getDescriptorSetDescriptorRangeIndexOffset(0, r);
-
             const char *name = nullptr;
             if (r < globalsTL->getFieldCount())
                 if (auto *f = globalsTL->getFieldByIndex(r)) name = f->getName();
-
             std::printf("space %u, binding %u, type %d (%s), count %d, name %s\n",
                         space, binding, int(brType), glKind, brCount, name ? name : "(unnamed)");
         }
-
-        if (onError) *onError = new std::string("ok");
+        if (onError) *onError = nullptr;
     }
 
     void ap_getVariables(SlangSessionWrapper *session, SlangProgramWrapper *program, ShaderVariable *data) {
@@ -396,23 +377,16 @@ extern "C" {
         desc.allowGLSLSyntax = true;
         auto *entry = static_cast<slang::CompilerOptionEntry *>(malloc(sizeof(slang::CompilerOptionEntry) * 4));
         entry[0].name = slang::CompilerOptionName::VulkanInvertY;
-        entry[0].value = {
-            .intValue0 = 0
-        };
+        entry[0].value = { .intValue0 = 0 };
         entry[1].name = slang::CompilerOptionName::MinimumSlangOptimization;
-        entry[1].value = {
-            .intValue0 = 1
-        };
-        entry[2].name = slang::CompilerOptionName::UseUpToDateBinaryModule;
-        entry[2].value = {
-            .intValue0 = 0 // for now
-        };
+        entry[1].value = { .intValue0 = 1 };
+        entry[2].name = slang::CompilerOptionName::LineDirectiveMode;
+        entry[2].value = { .intValue0 = SLANG_LINE_DIRECTIVE_MODE_STANDARD };
         desc.compilerOptionEntries = entry;
         desc.compilerOptionEntryCount = 3;
         slang::TargetDesc targetDesc = {};
         targetDesc.format = SLANG_GLSL;
         targetDesc.profile = globalSession->session->findProfile("glsl_460");
-
         desc.targets = &targetDesc;
         desc.targetCount = 1;
         desc.fileSystem = new ApFileSystem(file, lister, combiner, checker);
@@ -423,6 +397,8 @@ extern "C" {
         globalSession->session->createSession(desc, &session);
         auto *wrapper = new SlangSessionWrapper{};
         wrapper->session.attach(session);
+        wrapper->fileSystem.attach(desc.fileSystem);
+        free(entry);
         return wrapper;
     }
 
@@ -435,23 +411,22 @@ extern "C" {
 
     SlangModuleWrapper *ap_loadModule(SlangSessionWrapper *session, char *path, const void **onError) {
         slang::IBlob *diagnosticsBlob = nullptr;
-
         try {
             auto module = session->session->loadModule(path, &diagnosticsBlob);
-            auto *wrapper = new SlangModuleWrapper{};
             diagnoseIfNeeded(diagnosticsBlob);
-            wrapper->module.attach(module);
             if (!module) {
                 *onError = nullTerminateThis(static_cast<const char *>(diagnosticsBlob->getBufferPointer()),
                                              diagnosticsBlob->getBufferSize());
+                if (diagnosticsBlob) diagnosticsBlob->Release();
                 return nullptr;
             }
-
+            if (diagnosticsBlob) diagnosticsBlob->Release();
+            auto *wrapper = new SlangModuleWrapper{};
+            wrapper->module.attach(module);
             return wrapper;
         } catch (...) {
             diagnoseIfNeeded(diagnosticsBlob);
-
-            printf("FUCK");
+            if (diagnosticsBlob) diagnosticsBlob->Release();
             return nullptr;
         }
     }
@@ -465,10 +440,8 @@ extern "C" {
         for (int i = 0; i < count; i++) {
             slang::IEntryPoint* ep = nullptr;
             module->module->getDefinedEntryPoint(i, &ep);
-            entries[i] = {
-                .name = ep->getFunctionReflection()->getName(),
-                .index = i
-            };
+            entries[i] = { .name = ep->getFunctionReflection()->getName(), .index = i };
+            if (ep) ep->release();
         }
     }
 
@@ -476,60 +449,61 @@ extern "C" {
                                               const void **onError) {
         slang::IBlob *diagnosticsBlob = nullptr;
         auto module = session->session->loadModuleFromSourceString(name, path, data, &diagnosticsBlob);
-        auto *wrapper = new SlangModuleWrapper{};
         diagnoseIfNeeded(diagnosticsBlob);
-        wrapper->module.attach(module);
         if (!module) {
             *onError = nullTerminateThis(static_cast<const char *>(diagnosticsBlob->getBufferPointer()),
                                          diagnosticsBlob->getBufferSize());
+            if (diagnosticsBlob) diagnosticsBlob->Release();
             return nullptr;
         }
+        if (diagnosticsBlob) diagnosticsBlob->Release();
+        auto *wrapper = new SlangModuleWrapper{};
+        wrapper->module.attach(module);
+        return wrapper;
+    }
+
+    int ap_isModuleValid(SlangSessionWrapper *sesson, char* name, void *blob, int size) {
+        slang::IBlob *iBlob = slang_createBlob(blob, size);
+        return sesson->session->isBinaryModuleUpToDate(name, iBlob) ? 1 : 0;
+    }
+
+    SlangModuleWrapper *ap_loadModuleFromIRBlob(SlangSessionWrapper *session, char *name, char *path, void *data, int size,
+                                              const void **onError) {
+        slang::IBlob *diagnosticsBlob = nullptr;
+        slang::IBlob *blob = slang_createBlob(data, size);
+        auto module = session->session->loadModuleFromIRBlob(name, path, blob, &diagnosticsBlob);
+        diagnoseIfNeeded(diagnosticsBlob);
+        if (!module) {
+            *onError = nullTerminateThis(static_cast<const char *>(diagnosticsBlob->getBufferPointer()),
+                                         diagnosticsBlob->getBufferSize());
+            if (diagnosticsBlob) diagnosticsBlob->Release();
+            return nullptr;
+        }
+        if (diagnosticsBlob) diagnosticsBlob->Release();
+        auto *wrapper = new SlangModuleWrapper{};
+        wrapper->module.attach(module);
         return wrapper;
     }
 
     SlangEntryPointWrapper *ap_findEntryPoint(SlangModuleWrapper *module, char *path) {
         auto *entryPoint = new SlangEntryPointWrapper{};
         module->module->findEntryPointByName(path, entryPoint->entryPoint.writeRef());
-        if (!entryPoint->entryPoint)
-            return nullptr;
+        if (!entryPoint->entryPoint) { delete entryPoint; return nullptr; }
         return entryPoint;
     }
 
-    const void *linkTesting(SlangSessionWrapper *session, SlangModuleWrapper *module,
-                            SlangEntryPointWrapper *entryPoint) {
-        std::array<slang::IComponentType *, 2> componentTypes = {module->module, entryPoint->entryPoint};
-        Slang::ComPtr<slang::IComponentType> composedProgram;
-        {
-            Slang::ComPtr<slang::IBlob> diagnosticsBlob;
-            SlangResult result = session->session->createCompositeComponentType(
-                componentTypes.data(), componentTypes.size(), composedProgram.writeRef(), diagnosticsBlob.writeRef());
-        }
 
-        // 6. Link
-        Slang::ComPtr<slang::IComponentType> linkedProgram;
-        {
-            Slang::ComPtr<slang::IBlob> diagnosticsBlob;
-            SlangResult result = composedProgram->link(linkedProgram.writeRef(), diagnosticsBlob.writeRef());
-        }
-
-        // 7. Get Target Kernel Code
-        Slang::ComPtr<slang::IBlob> spirvCode;
-        {
-            Slang::ComPtr<slang::IBlob> diagnosticsBlob;
-            SlangResult result =
-                    linkedProgram->getEntryPointCode(0, 0, spirvCode.writeRef(), diagnosticsBlob.writeRef());
-        }
-        return spirvCode->getBufferPointer();
-    }
-
-    SlangProgramWrapper *ap_compileProgram(SlangSessionWrapper *session, SlangEntryPointWrapper *entryPoint,
-                                           void **modules, int size, const void **onError) {
+    SlangProgramWrapper *ap_compileProgram(SlangSessionWrapper *session, void **entryPoints,
+                                           void **modules, int moduleCount, int entryPointCount, const void **onError) {
         std::vector<slang::IComponentType *> components = {};
-        for (int i = 0; i < size; ++i) {
+        for (int i = 0; i < moduleCount; ++i) {
             auto *wrap = static_cast<SlangModuleWrapper *>(modules[i]);
             components.push_back(wrap->module.get());
         }
-        components.push_back(entryPoint->entryPoint.get());
+        for (int i = 0; i < entryPointCount; ++i) {
+            auto *wrap = static_cast<SlangEntryPointWrapper *>(entryPoints[i]);
+            components.push_back(wrap->entryPoint.get());
+        }
 
         slang::IBlob *diagnosticsBlob = nullptr;
         auto *program = new SlangProgramWrapper{};
@@ -537,46 +511,63 @@ extern "C" {
         session->session->createCompositeComponentType(components.data(), components.size(),
                                                        program->program.writeRef(), &diagnosticsBlob);
 
-        //*onError = strdup(static_cast<SlangModuleWrapper *>(modules[0])->module->getName());
+        if (!program->program.get()) {
+            const char *ptr = static_cast<const char *>(diagnosticsBlob->getBufferPointer());
+            size_t len = diagnosticsBlob->getBufferSize();
+            *onError = nullTerminateThis(ptr, len);
+            if (diagnosticsBlob) diagnosticsBlob->Release();
+            delete program;
+            return nullptr;
+        }
 
         diagnoseIfNeeded(diagnosticsBlob);
+        if (diagnosticsBlob) diagnosticsBlob->Release();
 
         return program;
     }
 
-    SlangLinkedWrapper* ap_linkProgram(SlangSessionWrapper *session, SlangProgramWrapper *program,
+    SlangLinkedWrapper* ap_linkProgram(SlangProgramWrapper *program,
                                const void **onError) {
         slang::IBlob *diagnosticsBlob = nullptr;
 
-        SlangLinkedWrapper* prog = new SlangLinkedWrapper{};
+        SlangLinkedWrapper* linked = new SlangLinkedWrapper{};
 
-        program->program->link(prog->program.writeRef(), &diagnosticsBlob);
+        program->program->link(linked->linked.writeRef(), &diagnosticsBlob);
         diagnoseIfNeeded(diagnosticsBlob);
-        if (!prog->program.get()) {
+        if (!linked->linked.get()) {
             const char *ptr = static_cast<const char *>(diagnosticsBlob->getBufferPointer());
             size_t len = diagnosticsBlob->getBufferSize();
-
-            auto *v = new std::string(ptr, len); // remember to delete v;
-            *onError = v->c_str();
-            return nullptr;
-        }
-        Slang::ComPtr<slang::IBlob> outCode;
-
-        prog->program->getEntryPointCode(0, 0, outCode.writeRef(), &diagnosticsBlob);
-        diagnoseIfNeeded(diagnosticsBlob);
-
-        if (!outCode.get()) {
-            const char *ptr = static_cast<const char *>(diagnosticsBlob->getBufferPointer());
-            size_t len = diagnosticsBlob->getBufferSize();
-
-            auto *v = new std::string(ptr, len); // remember to delete v;
-            *onError = v->c_str();
+            *onError = nullTerminateThis(ptr, len);
+            if (diagnosticsBlob) diagnosticsBlob->Release();
+            delete linked;
             return nullptr;
         }
 
+        if (diagnosticsBlob) { diagnosticsBlob->Release(); diagnosticsBlob = nullptr; }
 
+        return linked;
+    }
 
-        return prog;
+    void ap_destroySession(SlangSessionWrapper *session) {
+        (session->session)->Release();
+    }
+
+    const void* ap_getEntryPointCode(SlangLinkedWrapper* linked, int targetIndex, int* outSize, const void **onError) {
+        slang::IBlob* diagnosticsBlob = nullptr;
+        slang::IBlob* code = nullptr;
+
+        linked->linked->getEntryPointCode(targetIndex, 0, &code, &diagnosticsBlob);
+        diagnoseIfNeeded(diagnosticsBlob);
+        if (!code) {
+            const char *ptr = static_cast<const char *>(diagnosticsBlob->getBufferPointer());
+            size_t len = diagnosticsBlob->getBufferSize();
+            *onError = nullTerminateThis(ptr, len);
+            if (diagnosticsBlob) diagnosticsBlob->Release();
+            return nullptr;
+        }
+
+        *outSize = code->getBufferSize();
+        return code->getBufferPointer();
     }
 
     void ap_freeSegment(ShaderVariable *data, int variableCount) {
