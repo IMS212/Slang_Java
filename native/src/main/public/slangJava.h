@@ -1,6 +1,16 @@
 #ifndef SLANG_JAVA_SLANGJAVA_H
 #define SLANG_JAVA_SLANGJAVA_H
 
+
+#ifndef EXPORT_CODE
+    #if defined(_WIN32) || defined(_WIN64)
+        #define EXPORT_CODE __declspec(dllexport)
+    #elif defined(__GNUC__) || defined(__clang__)
+        #define EXPORT_CODE __attribute__((visibility("default")))
+    #else
+        #define EXPORT_CODE
+    #endif
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -41,58 +51,58 @@ extern "C" {
     typedef char* (*CombinePathsFunction)(const char *path1, const char *path2, int* outPathSize);
     typedef int (*CheckIsDirectoryFunction)(const char *path);
 
-    SlangGlobalSessionWrapper *ap_createGlobalSession(void);
+    EXPORT_CODE SlangGlobalSessionWrapper *ap_createGlobalSession(void);
 
-    void ap_destroyGlobalSession(SlangGlobalSessionWrapper *session);
+    EXPORT_CODE void ap_destroyGlobalSession(SlangGlobalSessionWrapper *session);
 
-    SlangSessionWrapper *ap_createSession(SlangGlobalSessionWrapper *globalSession,
+    EXPORT_CODE SlangSessionWrapper *ap_createSession(SlangGlobalSessionWrapper *globalSession,
                                           LoadFileFunction file, ListFilesFunction lister, CombinePathsFunction combiner, CheckIsDirectoryFunction checker);
 
-    void ap_destroySession(SlangSessionWrapper *session);
+    EXPORT_CODE void ap_destroySession(SlangSessionWrapper *session);
 
-    SlangModuleWrapper *ap_loadModule(SlangSessionWrapper *session, char *path,
+    EXPORT_CODE SlangModuleWrapper *ap_loadModule(SlangSessionWrapper *session, char *path,
                                       const void **onError);
 
-    SlangModuleWrapper *ap_loadModuleFromCode(SlangSessionWrapper *session, char *name, char *path, char *code,
+    EXPORT_CODE SlangModuleWrapper *ap_loadModuleFromCode(SlangSessionWrapper *session, char *name, char *path, char *code,
                                               const void **onError);
 
-    SlangModuleWrapper *ap_loadModuleFromIRBlob(SlangSessionWrapper *session, char *name, char *path, void *blob, int size,
+    EXPORT_CODE SlangModuleWrapper *ap_loadModuleFromIRBlob(SlangSessionWrapper *session, char *name, char *path, void *blob, int size,
                                               const void **onError);
 
-    int ap_isModuleValid(SlangSessionWrapper *sesson, char* name, void *blob, int size);
+    EXPORT_CODE int ap_isModuleValid(SlangSessionWrapper *sesson, char* name, void *blob, int size);
 
-    void ap_onLoadFile(int isFolder, char *name, void *callback, void *userData);
+    EXPORT_CODE void ap_onLoadFile(int isFolder, char *name, void *callback, void *userData);
 
-    SlangEntryPointWrapper *ap_findEntryPoint(SlangModuleWrapper *module,
+    EXPORT_CODE SlangEntryPointWrapper *ap_findEntryPoint(SlangModuleWrapper *module,
                                               char *path);
 
-    int ap_getEntryPointCount(SlangModuleWrapper *module);
+    EXPORT_CODE int ap_getEntryPointCount(SlangModuleWrapper *module);
 
-    void ap_getEntryPoints(SlangModuleWrapper* module, EntryPoints* entries);
+    EXPORT_CODE void ap_getEntryPoints(SlangModuleWrapper* module, EntryPoints* entries);
 
-    SlangProgramWrapper *ap_compileProgram(SlangSessionWrapper *session, void **entryPoints,
+    EXPORT_CODE SlangProgramWrapper *ap_compileProgram(SlangSessionWrapper *session, void **entryPoints,
                                            void **modules, int moduleCount, int entryPointCount, const void **onError);
 
-    SlangLinkedWrapper* ap_linkProgram(SlangProgramWrapper *program,
+    EXPORT_CODE SlangLinkedWrapper* ap_linkProgram(SlangProgramWrapper *program,
                                const void **onError);
 
-    const void* ap_getEntryPointCode(SlangLinkedWrapper* linked, int targetIndex, int* outSize, const void **onError);
+    EXPORT_CODE const void* ap_getEntryPointCode(SlangLinkedWrapper* linked, int targetIndex, int* outSize, const void **onError);
 
-    int ap_getVariableCount(SlangSessionWrapper *session,
+    EXPORT_CODE int ap_getVariableCount(SlangSessionWrapper *session,
                             SlangProgramWrapper *program,
                             const void **onError);
 
-    void ap_getVariables(SlangSessionWrapper *session,
+    EXPORT_CODE void ap_getVariables(SlangSessionWrapper *session,
                          SlangProgramWrapper *program,
                          ShaderVariable *data);
 
-    void ap_freeSegment(ShaderVariable *data, int variableCount);
+    EXPORT_CODE void ap_freeSegment(ShaderVariable *data, int variableCount);
 
-    int ap_getModuleCount(SlangSessionWrapper *session);
+    EXPORT_CODE int ap_getModuleCount(SlangSessionWrapper *session);
 
-    void ap_getModules(SlangSessionWrapper *session, ShaderModule *data);
+    EXPORT_CODE void ap_getModules(SlangSessionWrapper *session, ShaderModule *data);
 
-    void ap_freeModules(int count, ShaderModule *data);
+    EXPORT_CODE void ap_freeModules(int count, ShaderModule *data);
 #ifdef __cplusplus
 }
 #endif

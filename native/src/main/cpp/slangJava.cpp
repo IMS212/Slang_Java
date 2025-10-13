@@ -11,6 +11,7 @@
 #include "slang.h"
 
 #include <cstring>
+#include <filesystem>
 #include <format>
 
 void diagnoseIfNeeded(slang::IBlob *diagnosticsBlob) {
@@ -25,7 +26,7 @@ struct SlangGlobalSessionWrapper {
 
 struct SlangSessionWrapper {
     Slang::ComPtr<slang::ISession> session;
-    Slang::ComPtr<ISlangFileSystem> fileSystem; // keep a ref in case Slang doesn't
+    Slang::ComPtr<ISlangFileSystem> fileSystem;
 };
 
 struct SlangModuleWrapper {
@@ -77,110 +78,178 @@ class ApBlob final : public ISlangBlob {
         }
 };
 
+namespace fs = std::filesystem;
+
+static std::string safeCStrView(const char* p, size_t maxLen = 4096) {
+    if (!p) return {};
+    const void* z = memchr(p, 0, maxLen);
+    if (!z) return {};
+    return std::string(p, (const char*)z - p);
+}
+
 class ApFileSystem final : public ISlangFileSystemExt {
-    public:
-        LoadFileFunction funct;
-        ListFilesFunction lister;
-        CombinePathsFunction combiner;
-        CheckIsDirectoryFunction checker;
+public:
+    LoadFileFunction          funct;
+    ListFilesFunction         lister;
+    CombinePathsFunction      combiner;
+    CheckIsDirectoryFunction  checker;
 
-        explicit ApFileSystem(LoadFileFunction funct, ListFilesFunction lister, CombinePathsFunction combiner,
-                             CheckIsDirectoryFunction checker) {
-            this->funct = funct;
-            this->lister = lister;
-            this->combiner = combiner;
-            this->checker = checker;
-        }
+    explicit ApFileSystem(LoadFileFunction f, ListFilesFunction l,
+                          CombinePathsFunction c, CheckIsDirectoryFunction d)
+        : funct(f), lister(l), combiner(c), checker(d) {}
 
-        virtual ~ApFileSystem() = default;
+    SlangResult queryInterface(const SlangUUID& uuid, void** outObject) override {
+        if (!outObject) return SLANG_E_INVALID_ARG;
+        *outObject = nullptr;
 
-        SlangResult loadFile(const char *path, ISlangBlob **outBlob) override {
-            SlangString *blob = funct(path);
-
-            if (blob->size == 0 || !blob->data) {
-                return SLANG_E_NOT_FOUND;
-            }
-
-            ISlangBlob *rawBlob = slang_createBlob(blob->data, blob->size);
-
-            *outBlob = rawBlob;
-
+        if (uuid == ISlangUnknown::getTypeGuid()
+         || uuid == ISlangFileSystem::getTypeGuid()
+         || uuid == ISlangFileSystemExt::getTypeGuid())
+        {
+            *outObject = static_cast<ISlangFileSystemExt*>(this);
+            addRef();
             return SLANG_OK;
         }
+        return SLANG_E_NO_INTERFACE;
+    }
 
-        SlangResult queryInterface(const SlangUUID &uuid, void **outObject) override {
-            if (!outObject) {
-                return SLANG_E_INVALID_ARG;
+    uint32_t addRef() override {
+        return ++m_refCount;
+    }
+    uint32_t release() override {
+        uint32_t rc = --m_refCount;
+        if (rc == 0) delete this;
+        return rc;
+    }
+    void* castAs(const SlangUUID& guid) override {
+        if (guid == ISlangFileSystemExt::getTypeGuid()
+         || guid == ISlangFileSystem::getTypeGuid()
+         || guid == ISlangUnknown::getTypeGuid())
+        {
+            return static_cast<ISlangFileSystemExt*>(this);
+        }
+        return nullptr;
+    }
+
+    SlangResult loadFile(char const* path, ISlangBlob** outBlob) override {
+        if (!outBlob) return SLANG_E_INVALID_ARG;
+        *outBlob = nullptr;
+
+        std::string spath = safeCStrView(path);
+        if (spath.empty()) return SLANG_E_NOT_FOUND;
+
+        SlangString* s = funct(spath.c_str());
+        if (!s || !s->data || s->size <= 0) {
+            return SLANG_E_NOT_FOUND;
+        }
+
+        ISlangBlob* owned  = slang_createBlob(s->data, (size_t)s->size);
+        if (!owned) {
+            // don't leak
+            delete[] static_cast<char*>(s->data);
+            delete s;
+            return SLANG_FAIL;
+        }
+
+        delete[] static_cast<char*>(s->data);
+        delete s;
+
+        *outBlob = owned;
+        return SLANG_OK;
+    }
+
+    SlangResult enumeratePathContents(char const* path,
+                                      FileSystemContentsCallBack callback,
+                                      void* userData) override
+    {
+        if (!callback) return SLANG_E_INVALID_ARG;
+        std::string spath = safeCStrView(path);
+        if (spath.empty()) return SLANG_E_NOT_FOUND;
+
+        int rc = lister(spath.c_str(), (void*)callback, userData);
+        return rc == 0 ? SLANG_OK : SLANG_FAIL;
+    }
+
+    OSPathKind getOSPathKind() override {
+        return OSPathKind::Direct;
+    }
+
+SlangResult getFileUniqueIdentity(const char* path, ISlangBlob** outUniqueIdentity) override {
+    if (!path || !outUniqueIdentity) return SLANG_E_INVALID_ARG;
+
+    std::error_code ec;
+    fs::path p(path);
+    fs::path idPath = fs::exists(p, ec) ? fs::canonical(p, ec) : p.lexically_normal();
+    std::string s = idPath.generic_string();
+
+    *outUniqueIdentity = slang_createBlob(s.data(), s.size());
+    return SLANG_OK;
+}
+
+
+SlangResult calcCombinedPath(SlangPathType /*fromPathType*/, const char* path1, const char* path2,
+                             ISlangBlob** pathOut) override
+{
+    if (!path1 || !path2 || !pathOut) return SLANG_E_INVALID_ARG;
+
+    int size = 0;
+    char* combined = combiner(path1, path2, &size);
+    if (!combined || size <= 0) {
+        if (combined) std::free(combined);
+        return SLANG_FAIL;
+    }
+    *pathOut = slang_createBlob(combined, size);
+    std::free(combined);
+    return SLANG_OK;
+}
+
+
+    SlangResult getPathType(char const* path, SlangPathType* pathTypeOut) override {
+        if (!pathTypeOut) return SLANG_E_INVALID_ARG;
+        std::string spath = safeCStrView(path);
+        if (spath.empty()) { *pathTypeOut = SLANG_PATH_TYPE_FILE; return SLANG_OK; }
+
+        bool isDir = checker(spath.c_str()) > 0;
+        *pathTypeOut = isDir ? SLANG_PATH_TYPE_DIRECTORY : SLANG_PATH_TYPE_FILE;
+        return SLANG_OK;
+    }
+
+    SlangResult getPath(PathKind kind, char const* path, ISlangBlob** outPath) override {
+        if (!outPath) return SLANG_E_INVALID_ARG;
+        *outPath = nullptr;
+
+        std::error_code ec;
+        std::string result;
+
+        switch (kind) {
+            case PathKind::OperatingSystem: {
+
+                return SLANG_FAIL;
             }
-
-            *outObject = nullptr;
-
-            if (uuid == ISlangFileSystem::getTypeGuid()) {
-                *outObject = static_cast<ISlangFileSystem *>(this);
-                addRef();
-                return SLANG_OK;
+            case PathKind::Canonical: {
+                result = fs::current_path(ec).generic_string();
+                if (ec) return SLANG_FAIL;
+                break;
             }
-
-            return SLANG_E_NO_INTERFACE;
-        }
-
-        uint32_t addRef() override {
-            return 1;
-        }
-
-        uint32_t release() override {
-            return 0;
-        }
-
-        void *castAs(const SlangUUID &guid) override {
-            if (guid == getTypeGuid()) {
-                return static_cast<ISlangFileSystem *>(this);
+            default: {
+                // honestly, i just gave up here
+                std::string spath = safeCStrView(path);
+                result = spath;
+                break;
             }
-            return nullptr;
         }
 
+        ISlangBlob* b = slang_createBlob(result.data(), result.size());
+        *outPath = b;
+        return SLANG_OK;
+    }
 
-        void clearCache() {
-        }
+    void clearCache() override {
 
-        SlangResult enumeratePathContents(const char *path, FileSystemContentsCallBack callback, void *userData) {
-            return lister(path, (void *) callback, userData);
-        }
+    }
 
-        OSPathKind getOSPathKind() override {
-            return OSPathKind::Direct;
-        }
-
-        SlangResult getFileUniqueIdentity(const char *path, ISlangBlob **outUniqueIdentity) override {
-            *outUniqueIdentity = slang_createBlob(path, strlen(path));
-            return SLANG_OK; // TODO: this is... wrong. Paths should be resolved to absolute paths first, and then hashed.
-        }
-
-        SlangResult calcCombinedPath(SlangPathType fromPathType, const char *path1, const char *path2,
-            ISlangBlob **pathOut) override {
-            int size = -1;
-
-            char* path = combiner(path1, path2, &size);
-            if (size <= 0 || !path) {
-                printf("Couldn't get combined path\n");
-                return SLANG_E_NOT_FOUND;
-            }
-
-            *pathOut = slang_createBlob(path, size);
-            return SLANG_OK;
-        }
-
-        SlangResult getPathType(const char *path, SlangPathType *pathTypeOut) override {
-            bool isDir = checker(path) > 0;
-            *pathTypeOut = isDir ? SLANG_PATH_TYPE_DIRECTORY : SLANG_PATH_TYPE_FILE;
-            return SLANG_OK;
-        }
-
-        SlangResult getPath(PathKind kind, const char *path, ISlangBlob **outPath) override {
-            printf("FUCK\n");
-            *outPath = slang_createBlob(path, strlen(path));
-            return SLANG_OK;
-        }
+private:
+    std::atomic<uint32_t> m_refCount{1};
 };
 
 char *nullTerminateThis(const char *src, std::size_t len) {
@@ -195,7 +264,7 @@ extern "C" {
         return 69;
     }
 
-    static void listResources(slang::ProgramLayout *prog, int targetIndex, const void **onError) {
+    void listResources(slang::ProgramLayout *prog, int targetIndex, const void **onError) {
         auto *tgt = prog;
         auto *globalsVL = tgt->getGlobalParamsVarLayout();
         auto *globalsTL = tgt->getGlobalParamsTypeLayout();
@@ -243,7 +312,7 @@ extern "C" {
         const int rangeCount = globalsTL->getBindingRangeCount();
         for (int r = 0; r < rangeCount; ++r) {
             const auto brType = globalsTL->getBindingRangeType(r);
-            const int brCount = globalsTL->getBindingRangeBindingCount(r); // array size (>=1)
+            const int brCount = globalsTL->getBindingRangeBindingCount(r);
 
 
             slang::ParameterCategory cat;
@@ -281,7 +350,6 @@ extern "C" {
 
 
     int ap_getVariableCount(SlangSessionWrapper *session, SlangProgramWrapper *program, const void **onError) {
-        // Use the per-target layout
         auto *tgt = program->program->getLayout(0);
         auto *globalsVL = tgt->getGlobalParamsVarLayout();
         auto *globalsTL = tgt->getGlobalParamsTypeLayout();
@@ -299,9 +367,8 @@ extern "C" {
         for (int i = 0; i < count; i++) {
             auto *module = session->session->getLoadedModule(i);
 
-            ISlangBlob *blob = nullptr;
-
-            module->serialize(&blob);
+            Slang::ComPtr<ISlangBlob> blob;
+            module->serialize(blob.writeRef());
 
 
             if (!blob) throw std::runtime_error("Failed to serialize module");
@@ -332,7 +399,6 @@ extern "C" {
 
     void ap_freeModules(int count, ShaderModule *data) {
         for (int i = 0; i < count; i++) {
-            // Free the buffer we allocated in ap_getModules
             if (data[i].data) {
                 std::free(const_cast<void *>(data[i].data));
                 data[i].data = nullptr;
@@ -345,11 +411,7 @@ extern "C" {
         listResources(layout, 0, onError);
     }
 
-    const char *result() {
-        return "Fuck";
-    }
-
-    extern "C" SlangGlobalSessionWrapper *ap_createGlobalSession() {
+    SlangGlobalSessionWrapper *ap_createGlobalSession() {
         SlangGlobalSessionDesc desc = {};
         slang::IGlobalSession *raw = nullptr;
 
@@ -363,7 +425,7 @@ extern "C" {
         return wrapper;
     }
 
-    extern "C" void ap_destroyGlobalSession(SlangGlobalSessionWrapper *wrapper) {
+    void ap_destroyGlobalSession(SlangGlobalSessionWrapper *wrapper) {
         if (!wrapper)
             return;
         if (wrapper->session)
@@ -463,8 +525,9 @@ extern "C" {
     }
 
     int ap_isModuleValid(SlangSessionWrapper *sesson, char* name, void *blob, int size) {
-        slang::IBlob *iBlob = slang_createBlob(blob, size);
-        return sesson->session->isBinaryModuleUpToDate(name, iBlob) ? 1 : 0;
+        Slang::ComPtr<slang::IBlob> iBlob;
+        iBlob.attach((slang::IBlob *)slang_createBlob(blob, size));
+        return sesson->session->isBinaryModuleUpToDate(name, iBlob.get());
     }
 
     SlangModuleWrapper *ap_loadModuleFromIRBlob(SlangSessionWrapper *session, char *name, char *path, void *data, int size,

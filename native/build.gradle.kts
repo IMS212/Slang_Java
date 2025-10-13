@@ -1,3 +1,5 @@
+import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
+
 plugins {
     id("cpp-library")
 }
@@ -12,10 +14,15 @@ repositories {
 dependencies {
 }
 
+var os: OperatingSystem? = DefaultNativePlatform.getCurrentOperatingSystem()
 
 tasks.withType<CppCompile>().configureEach {
     includes {
-        "/home/ims/slang/include"
+        rootDir.parentFile.resolve("slang").resolve("include")
+    }
+
+    if (os?.isWindows ?: false) {
+        compilerArgs.addAll(listOf("/std:c++20", "/MD", "/O2", "/Gy", "/Gw"))
     }
 
 }
@@ -23,9 +30,16 @@ tasks.withType<CppCompile>().configureEach {
 
 tasks.withType<LinkSharedLibrary>().configureEach {
     // add the path to libslang.so
-    linkerArgs.addAll(
-        listOf(
-            "/home/ims/slang/cmake-build-release-system/Release/lib/libslang.so"
+    if (os?.isWindows ?: false) {
+        linkerArgs.addAll(
+            listOf(
+                "/OPT:REF",
+                "/OPT:ICF",
+                rootDir.resolve("slang.lib").absolutePath
+            )
         )
-    )
+    } else {
+        linkerArgs.addAll(rootDir.resolve("libslang.so").absolutePath)
+    }
+
 }

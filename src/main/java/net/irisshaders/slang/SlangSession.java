@@ -116,9 +116,21 @@ public class SlangSession {
                 String path = ShaderModule.path(slice).getString(0);
                 MemorySegment p = ShaderModule.data(slice);
                 int size = ShaderModule.size(slice);
-                if (size <= 0) throw new IllegalStateException("WHAT" + name);
-                MemorySegment bytesSeg = p.reinterpret(size);
-                byte[] module = bytesSeg.toArray(ValueLayout.JAVA_BYTE);
+                if (size < 0) {
+                    throw new IllegalStateException("Module '" + name + "' reported a negative size");
+                }
+
+                byte[] module;
+                if (size == 0) {
+                    module = new byte[0];
+                } else {
+                    MemorySegment address = slice.get(ValueLayout.ADDRESS, ShaderModule.data$offset()).reinterpret(Integer.toUnsignedLong(size));
+                    if (address.address() == 0L) {
+                        throw new IllegalStateException("Module '" + name + "' returned null data with size " + size);
+                    }
+                    module = address.toArray(ValueLayout.JAVA_BYTE);
+                }
+
                 modules[i] = new ModuleIR(name, path, module);
                 System.out.println("Got a module of " + modules[i] + " with a size of " + ShaderModule.size(slice));
             }

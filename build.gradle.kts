@@ -1,5 +1,5 @@
 plugins {
-    id("java")
+    id("java-library")
     id("de.infolektuell.jextract") version "0.5.0"
     id("maven-publish")
 
@@ -13,28 +13,35 @@ repositories {
     mavenCentral()
     maven("https://central.sonatype.com/repository/maven-snapshots")
 }
-
+// for local runs only; never published/consumable
+val localRun by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+    isVisible = false
+}
 dependencies {
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
 
-    implementation(platform("org.lwjgl:lwjgl-bom:$lwjglVersion"))
 
-    implementation("org.lwjgl", "lwjgl")
-    implementation("org.lwjgl", "lwjgl-assimp")
-    implementation("org.lwjgl", "lwjgl-glfw")
-    implementation("org.lwjgl", "lwjgl-openal")
-    implementation("org.lwjgl", "lwjgl-opengl")
-    implementation("org.lwjgl", "lwjgl-stb")
-    implementation("org.lwjgl", "lwjgl-tinyfd")
+    compileOnly(platform("org.lwjgl:lwjgl-bom:$lwjglVersion"))
+    compileOnly("org.lwjgl:lwjgl")
+    compileOnly("org.lwjgl:lwjgl-assimp")
+    compileOnly("org.lwjgl:lwjgl-glfw")
+    compileOnly("org.lwjgl:lwjgl-openal")
+    compileOnly("org.lwjgl:lwjgl-opengl")
+    compileOnly("org.lwjgl:lwjgl-stb")
+    compileOnly("org.lwjgl:lwjgl-tinyfd")
 
-    implementation ("org.lwjgl", "lwjgl", classifier = lwjglNatives)
-    implementation ("org.lwjgl", "lwjgl-assimp", classifier = lwjglNatives)
-    implementation ("org.lwjgl", "lwjgl-glfw", classifier = lwjglNatives)
-    implementation ("org.lwjgl", "lwjgl-openal", classifier = lwjglNatives)
-    implementation ("org.lwjgl", "lwjgl-opengl", classifier = lwjglNatives)
-    implementation ("org.lwjgl", "lwjgl-stb", classifier = lwjglNatives)
-    implementation ("org.lwjgl", "lwjgl-tinyfd", classifier = lwjglNatives)
+    // natives only for local runs (not published)
+    localRun(platform("org.lwjgl:lwjgl-bom:$lwjglVersion"))
+    localRun ("org.lwjgl", "lwjgl", classifier = lwjglNatives)
+    localRun ("org.lwjgl", "lwjgl-assimp", classifier = lwjglNatives)
+    localRun ("org.lwjgl", "lwjgl-glfw", classifier = lwjglNatives)
+    localRun ("org.lwjgl", "lwjgl-openal", classifier = lwjglNatives)
+    localRun ("org.lwjgl", "lwjgl-opengl", classifier = lwjglNatives)
+    localRun ("org.lwjgl", "lwjgl-stb", classifier = lwjglNatives)
+    localRun ("org.lwjgl", "lwjgl-tinyfd", classifier = lwjglNatives)
 
 }
 
@@ -71,17 +78,10 @@ jextract.libraries {
     }
 }
 
-publishing {
-    repositories {
-        mavenLocal()
-    }
 
+publishing {
     publications {
         create<MavenPublication>("maven") {
-            groupId = project.group as String
-            artifactId = rootProject.name + "-" + project.name
-            version = version
-
             from(components["java"])
         }
     }
