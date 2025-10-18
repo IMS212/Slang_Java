@@ -7,6 +7,10 @@ plugins {
 group = "org.example"
 version = "1.0-SNAPSHOT"
 
+library {
+    baseName = "slang-java"
+}
+
 repositories {
     mavenCentral()
 }
@@ -39,7 +43,16 @@ tasks.withType<LinkSharedLibrary>().configureEach {
             )
         )
     } else {
-        linkerArgs.addAll(rootDir.resolve("libslang.so").absolutePath)
+        val libDir = rootDir.absolutePath
+        linkerArgs.addAll(
+            listOf(
+                "-O3",
+                "-L$libDir",
+                "-lslang",
+                "-Wl,--enable-new-dtags",
+                "-Wl,-rpath,\$ORIGIN"
+            )
+        )
     }
 
 }
